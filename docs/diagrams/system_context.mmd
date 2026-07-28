@@ -1,0 +1,25 @@
+flowchart TD
+    User([Life OS User]) <--> |Manages life, plans, and reflects| System[Life OS App<br/>Desktop / Web / Mobile]
+    
+    subgraph Local Storage
+        Vault[Local Markdown Vault<br/>Plain Text Notes & Journals]
+        SQLite[(SQLite DB<br/>Relational Cache & Search)]
+    end
+
+    subgraph External Integrations
+        Plaid[Plaid API<br/>Bank Sync]
+        Ollama[Ollama Server<br/>Local AI Inference]
+        CloudLLM[Cloud LLM Provider<br/>OpenAI/Anthropic APIs]
+        SyncServer[Sync Server<br/>E2EE CRDT Sync]
+    end
+
+    System <--> |Reads/Writes| Vault
+    System <--> |Indexes & Queries| SQLite
+    
+    System <--> |Pulls Transactions| Plaid
+    System <--> |Queries Local Model| Ollama
+    System -.-> |Optional Cloud LLM Inference| CloudLLM
+    System -.-> |Optional Encrypted Sync| SyncServer
+
+    style Local Storage fill:#f9f9f9,stroke:#333,stroke-width:1px;
+    style External Integrations fill:#f1f2f6,stroke:#ccc,stroke-dasharray: 5 5;
