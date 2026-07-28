@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    actor User as User
+    participant UI as User Interface (React)
+    participant Core as Core OS Engine (Tauri/Rust)
+    participant AG as Agent Gateway (MCP)
+    participant LLM as Ollama / Local Model
+
+    User->>UI: Triggers CMD+K "Draft Weekly Review"
+    UI->>Core: Request last 7 days of unified logs (finances, sleep, habits)
+    Core->>Core: Fetch from SQLite & Parse Markdown Vault
+    Core-->>UI: Return raw weekly dataset (low sensitivity)
+    UI->>Core: Request context-aware retrospective prompt
+    Core->>AG: Construct prompt payload & Apply Context Masking
+    Note over AG: High sensitivity data scrubbed/tokenized locally
+    AG->>LLM: Send anonymized Weekly Reflection prompt
+    LLM-->>AG: Return drafted Weekly Review & correlation report
+    AG->>Core: Forward raw review draft
+    Core->>Core: Save weekly review markdown draft to Vault
+    Core-->>UI: Push draft status & correlation details
+    UI-->>User: Render fully drafted Weekly Note (ready for manual final edit)
