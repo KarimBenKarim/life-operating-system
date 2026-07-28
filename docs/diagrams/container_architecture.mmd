@@ -1,0 +1,22 @@
+flowchart TD
+    User([User]) <--> |Interacts & Views Dashboard| UI[User Interface Container<br/>React + Vite + Tailwind]
+    
+    subgraph Client Application [Tauri Wrapper / Desktop App Boundary]
+        UI <--> |IPC / API Calls| Core[Core OS Engine Container<br/>Tauri Rust Backend]
+        
+        Core <--> |Sync & File Monitoring| Vault[Markdown Vault<br/>Plain text notes & files]
+        Core <--> |Transactional Queries| RelDB[(SQLite Database)]
+        Core <--> |Vector Semantic Retrieval| VecDB[(Local Vector DB<br/>SQLite-vec / HNSW)]
+        
+        Core <--> |Launches & Interacts| Agent[Agent & Intelligence Container<br/>Local MCP / Ollama]
+    end
+
+    subgraph External System Boundaries
+        Agent <--> |Optional Secure Prompting| CloudLLM[Cloud LLM Provider<br/>OpenAI/Anthropic APIs]
+        Agent <--> |Optional Pattern Queries| Ollama[Local Ollama Inference]
+        Core <--> |Optional Background Sync| SyncCloud[Encrypted End-to-End Sync<br/>Yjs / CRDT Relays]
+        Core <--> |Optional Financial Sync| Plaid[Financial APIs<br/>Plaid / CalDAV]
+    end
+
+    style Client Application fill:#f9f9f9,stroke:#333,stroke-width:2px;
+    style External System Boundaries fill:#f1f2f6,stroke:#ccc,stroke-dasharray: 5 5;
