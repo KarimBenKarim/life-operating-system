@@ -1,0 +1,43 @@
+erDiagram
+    PROJECT ||--o{ TASK : contains
+    PROJECT ||--o{ TRANSACTION : funds
+    PROJECT ||--o{ NOTE : references
+
+    TASK ||--o{ TASK_LOG : tracks
+    TASK ||--o{ NOTE : connects
+
+    HABIT ||--o{ HABIT_LOG : records
+    HABIT ||--o{ NOTE : explains
+
+    DAILY_JOURNAL ||--o{ HABIT_LOG : displays
+    DAILY_JOURNAL ||--o{ BIOMETRIC_LOG : captures
+    DAILY_JOURNAL ||--o{ TRANSACTION : details
+
+    BIOMETRIC_LOG {
+        string mood_rating
+        int sleep_duration_mins
+        int sleep_quality_pct
+        int water_intake_ml
+        int steps_count
+    }
+
+    TRANSACTION {
+        float amount
+        string category
+        string payee
+        date transaction_date
+        string status
+    }
+
+    HABIT {
+        string habit_name
+        string frequency
+        string target_metric
+    }
+
+    TASK {
+        string title
+        string status
+        date due_date
+        string priority
+    }
