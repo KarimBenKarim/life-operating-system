@@ -1193,14 +1193,14 @@ components:
     UnauthorizedError:
       description: Bearer token is missing, invalid, or expired.
       content:
-        application/json:
+        application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
 
     ValidationError:
       description: Provided fields did not pass constraints.
       content:
-        application/json:
+        application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
 ```
