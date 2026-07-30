@@ -43,6 +43,9 @@ Life OS utilizes a **hybrid, multi-protocol communication engine** to satisfy tr
 - **Authentication**: Stateless session management utilizing **JSON Web Tokens (JWT)** combined with secure state rotation.
   - **Access Tokens**: Short-lived (15 minutes), passed inside the `Authorization: Bearer <JWT>` HTTP header.
   - **Refresh Tokens**: Long-lived (7 days), stored inside an HTTP-only, secure, SameSite=Strict cookie.
+    - **Hosting Requirement**: Since the cookie is configured with `SameSite=Strict` for superior CSRF protection, the frontend web application and API Gateway **must be hosted on the same registrable domain (same-site)** (e.g., `app.lifeos.org` and `api.lifeos.org`).
+    - **Credentialed Client Requests**: Browser-side requests targeting login, refresh, or logout must run as **credentialed requests** (e.g., `fetch(..., { credentials: 'include' })` or `axios.create({ withCredentials: true })`).
+    - **Gateway CORS Matching**: The Gateway's CORS policies must return the `Access-Control-Allow-Credentials: true` header alongside the explicit, non-wildcard origin domain matching the requesting domain.
   - **Tauri Local Auth**: For local installations, refresh tokens are securely stored inside the system's local secure keychain (via Rust's `keyring` crate) and loaded during app bootstrap.
 - **Authorization**: **Role-Based Access Control (RBAC)** coupled with **Resource-Level Ownership Validation**.
   - **Roles**: `user` (default), `admin` (system configuration), and `agent` (restricted API token scopes).
@@ -123,6 +126,7 @@ Life OS utilizes a **hybrid, multi-protocol communication engine** to satisfy tr
 
 ### API Security
 - **CORS Configuration**: Restricts access to trusted origins (e.g., `tauri://localhost`, `http://localhost:5173`).
+  - To support the transfer of the `SameSite=Strict` HTTP-only refresh cookies, the API Gateway **must return the `Access-Control-Allow-Credentials: true` header** and explicitly match the incoming origin against the trusted origin list (CORS wildcards `*` are disallowed for credentialed sessions).
 - **Content Security Policy (CSP)**: Specifically designed for Tauri webviews:
   - `default-src 'self'; script-src 'self'; connect-src 'self' ws://localhost:8080 http://localhost:8080;`
 - **Payload Limits**: File uploads are restricted to a maximum of 10MB. JSON payloads are strictly limited to 1MB.

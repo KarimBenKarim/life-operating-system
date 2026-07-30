@@ -10,6 +10,9 @@ As an Executive Operating System, Life OS must protect highly intimate personal,
 We select a **Hybrid JWT Bearer + Secure HttpOnly Cookie Rotation** architecture:
 1. **Access Token (Header)**: Standard JWT Access Tokens are issued to clients, residing entirely in-memory and passed in the `Authorization: Bearer <TOKEN>` header. These tokens expire in 15 minutes.
 2. **Refresh Token (Cookie)**: Long-lived Refresh Tokens (7-day expiration) are stored inside HTTP-only, Secure, SameSite=Strict cookies, managed exclusively by the Gateway.
+   - **Same-Site Hosting Requirement**: Since cookies are configured with `SameSite=Strict` to mitigate CSRF risks, the frontend client and API Gateway **must be deployed on the same registrable domain (same-site)** (e.g., `app.lifeos.org` and `api.lifeos.org`).
+   - **Credentialed Client Requests**: All browser requests touching authentication or token refreshing must run as **credentialed requests** (e.g., `fetch(..., { credentials: 'include' })` or `axios.create({ withCredentials: true })`).
+   - **CORS Requirements**: The API Gateway's CORS policy must explicitly echo back matching requester origins and emit `Access-Control-Allow-Credentials: true` (CORS wildcards `*` are disallowed).
 3. **Token Rotation**: Every access token refresh cycle automatically revokes and rotates the associated refresh token, mitigating potential session theft.
 4. **Tauri Native Persistence**: Since Tauri bypasses browser cookie limitations, native installations store refresh tokens securely inside the physical host operating system's keychain (via Rust's native `keyring` library), using local IPC calls during startup.
 
