@@ -1,0 +1,21 @@
+[package]
+name = "life-os-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Life OS Rust & Tauri Backend Core"
+
+[lib]
+name = "life_os_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "life-os"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2.2.0", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+tauri-build = { version = "2.0.5", features = [] }
