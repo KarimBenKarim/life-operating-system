@@ -1,4 +1,3 @@
-# life-operating-system
 # Life Operating System (Life OS)
 
 ## Overview
@@ -11,81 +10,98 @@ The objective is to maximise long-term success while maintaining balance between
 
 ---
 
-## Vision
+## Vision & Architecture
 
-See:
+- Vision: `docs/vision.md`
+- Architecture: `docs/architecture.md`
+- Roadmap: `docs/roadmap.md`
+- Architecture Decision Records (ADRs): `docs/adr/`
 
-docs/vision.md
-
----
-
-## Architecture
-
-The platform follows a hierarchical five-layer architecture.
-
+The platform follows a hierarchical five-layer architecture:
 1. Vision & Governance
 2. Strategic Intelligence
 3. Operational Management
 4. Execution Engine
 5. Autonomous Micro Agents
 
-Each layer has clearly defined responsibilities and communicates using structured messages.
+---
+
+## Developer Guide & Executable Setup
+
+### Prerequisites
+
+- **Node.js**: `^22.0.0`
+- **npm**: `^10.0.0` or `^11.0.0`
+- **Rust Toolchain**: `^1.80.0` or higher (`cargo`, `rustc`)
+- **System Dependencies (Linux/Ubuntu)**:
+  `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `patchelf`, `pkg-config`
 
 ---
 
-## Guiding Principles
+### Quick Start
 
-- Human remains in control.
-- AI proposes before acting.
-- Every recommendation must be explainable.
-- Long-term optimisation takes precedence over short-term productivity.
-- Modular architecture.
-- Event-driven communication.
-- AI components remain replaceable.
+#### 1. Install Frontend Dependencies
+```bash
+cd frontend
+npm install
+```
+
+#### 2. Run Frontend in Development Mode (Vite)
+```bash
+cd frontend
+npm run dev
+```
+
+#### 3. Run Tauri Desktop App in Development Mode
+```bash
+npm run tauri dev # Or from root using npx/tauri CLI
+```
 
 ---
 
-## Current Status
+### Verification & Testing Commands
 
-Project Phase:
+#### Frontend Quality Gates
+```bash
+cd frontend
+npm run typecheck    # TypeScript compilation check
+npm run lint         # ESLint checks
+npm test             # Vitest unit & smoke tests
+npm run build        # Production bundle build
+```
 
-Architecture Design
+#### Backend Quality Gates
+```bash
+cd src-tauri
+cargo fmt --check    # Check Rust formatting
+cargo clippy         # Run Clippy static analysis
+cargo test           # Run Rust unit tests
+cargo check          # Build check Rust crate
+```
 
-Implementation:
-
-Not Started
+#### Running CI Quality Gates Locally
+To run all CI checks locally prior to committing:
+```bash
+(cd frontend && npm run typecheck && npm run lint && npm test && npm run build) && \
+(cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test && cargo check)
+```
 
 ---
 
 ## Repository Structure
 
-docs/
-backend/
-frontend/
-infrastructure/
-memory/
-ai/
-automation/
-tests/
-
----
-
-## Documentation
-
-Vision:
-docs/vision.md
-
-Architecture:
-docs/architecture.md
-
-Roadmap:
-docs/roadmap.md
-
-Architecture Decisions:
-docs/adr/
+```text
+.
+├── .github/workflows/ci.yml   # GitHub Actions CI quality gates
+├── AGENTS.md                  # Master Engineering Handbook
+├── README.md                  # Developer & Architecture Guide
+├── docs/                      # Architectural specifications & 33 ADRs
+├── frontend/                  # React + TypeScript + Vite UI frontend
+└── src-tauri/                 # Rust + Tauri desktop core backend
+```
 
 ---
 
 ## Contributing
 
-See CONTRIBUTING.md.
+See `docs/CONTRIBUTING.md`.

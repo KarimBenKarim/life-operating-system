@@ -1,0 +1,12 @@
+# Node & Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+coverage/
+
+# Rust & Tauri
+target/
+src-tauri/target/
+backend/target/
