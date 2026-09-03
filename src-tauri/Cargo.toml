@@ -1,0 +1,31 @@
+[package]
+name = "life-os-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Life OS Rust & Tauri Backend Core"
+
+[lib]
+name = "life_os_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "life-os"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2.2.0", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher"] }
+argon2 = "0.5"
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+hex = "0.4"
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[build-dependencies]
+tauri-build = { version = "2.0.5", features = [] }

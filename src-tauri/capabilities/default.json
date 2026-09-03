@@ -1,0 +1,7 @@
+{
+  "identifier": "default",
+  "description": "Default capability for Life OS desktop app",
+  "permissions": [
+    "core:default"
+  ]
+}
