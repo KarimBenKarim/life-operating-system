@@ -178,9 +178,10 @@ pub fn verify_audit_chain(conn: &Connection) -> Result<AuditVerificationReport, 
     }
 
     let mut expected_previous_hash = GENESIS_HASH.to_string();
-    let mut expected_id = 1i64;
 
     for (idx, entry) in entries.iter().enumerate() {
+        let expected_id = (idx as i64) + 1;
+
         // Check ID sequence
         if entry.id != expected_id {
             return Err(DatabaseError::AuditTampered {
@@ -228,7 +229,6 @@ pub fn verify_audit_chain(conn: &Connection) -> Result<AuditVerificationReport, 
         }
 
         expected_previous_hash = entry.hash.clone();
-        expected_id += 1;
     }
 
     Ok(AuditVerificationReport {
