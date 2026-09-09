@@ -26,6 +26,20 @@ The platform follows a hierarchical five-layer architecture:
 
 ---
 
+## Secure Local Database Foundation
+
+Life OS implements a security-first local database foundation inside `src-tauri/src/db`:
+
+1. **Dependency Provenance**: `rusqlite 0.31.0` -> `libsqlite3-sys 0.28.0` (`bundled-sqlcipher` feature), compiling SQLCipher 4.5.3 Community (built against SQLite 3.39.4).
+2. **SQLCipher Encryption**: Page-level AES-256-CBC encryption with per-page HMAC-SHA512 integrity verification.
+3. **Argon2id Key Derivation**: Master passcodes derive 256-bit database encryption keys using Argon2id ($m=65536, t=3, p=4$) and a 16-byte random salt.
+4. **Atomic Salt Metadata Persistence**: Non-secret KDF metadata (`.db.kdf` JSON metadata file) is persisted alongside the database using atomic exclusive file creation (`O_CREAT | O_EXCL`), ensuring race-safe first-run initialization across concurrent processes/threads.
+5. **Zero Double-KDF & Zeroizing Memory**: Derived keys are supplied to SQLCipher using raw-key syntax (`PRAGMA key = "x'<64_hex_digits>'";`), wrapped in `Zeroizing<String>` heap buffers to guarantee immediate memory sanitization when dropped.
+6. **Deterministic Migrations**: Transactional version tracking via `_migrations` table with contiguous version validation (`1, 2, 3...`) on startup.
+7. **Cryptographic Audit Log & Fail-Closed Startup**: Tagged length-prefixed SHA-256 hash chaining over all audit fields (`id`, `created_at`, `user_id`, `action_type`, `entity_name`, `entity_id`, `before_state`, `after_state`, `client_info`, `previous_hash`). Unambiguously distinguishes `None` from `Some("")`. Serialized atomically via SQLite `TransactionBehavior::Immediate` transactions. Audit log chain is verified at Tauri app startup (`init_app_database`), which fails closed if no passcode provider is available.
+
+---
+
 ## Developer Guide & Executable Setup
 
 ### Prerequisites
