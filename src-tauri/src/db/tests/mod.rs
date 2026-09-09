@@ -163,9 +163,9 @@ fn test_migrations_idempotence_and_ordering() {
 
     let mut conn = open_database(&db_path, passcode).unwrap();
 
-    // Fresh DB -> 1 migration applied
+    // Fresh DB -> 2 migrations applied (V1 and V2)
     let applied = run_migrations(&mut conn).expect("Fresh migration should succeed");
-    assert_eq!(applied, 1);
+    assert_eq!(applied, 2);
 
     // Already migrated DB -> 0 migrations applied
     let reapplied = run_migrations(&mut conn).expect("Repeated migration should succeed");
@@ -174,12 +174,12 @@ fn test_migrations_idempotence_and_ordering() {
     // Verify _migrations table entries
     let count: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _migrations WHERE version = 1;",
+            "SELECT count(*) FROM _migrations WHERE version IN (1, 2);",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, 2);
 
     drop(conn);
     let _ = fs::remove_dir_all(db_path.parent().unwrap());

@@ -40,6 +40,18 @@ Life OS implements a security-first local database foundation inside `src-tauri/
 
 ---
 
+## Local Markdown Vault & Persistence Boundary
+
+Life OS implements a local-sovereign Markdown Vault abstraction inside `src-tauri/src/vault`:
+
+1. **Path Safety**: Enforces boundary validation via `PathValidator`, distinguishing `VaultRoot`, `RelativePath`, and `ResolvedPath`. Rejects `..` parent traversals, absolute path injections (`/etc/passwd`, `C:\...`), backslash tricks, and symlink/reparse-point escape attempts.
+2. **Document & Frontmatter Model**: `VaultDocument` maintains YAML frontmatter (`id`, `title`, `created_at`, `updated_at`, `schema_version`, and flattened `extra` map preserving unknown metadata fields) alongside UTF-8 Markdown text. Handles missing frontmatter, malformed YAML, Unicode text, and multiline values.
+3. **Atomic Filesystem Writes**: Writes execute atomically by writing to temporary files (`.tmp_<uuid>`) in the target directory, flushing/syncing to disk (`file.sync_all()`), and atomically replacing target files (`fs::rename`).
+4. **SQLite Metadata Indexing**: Migration V2 creates `vault_documents` table in SQLite, mirroring document metadata (`id`, `relative_path`, `title`, `file_size_bytes`, `content_hash`, timestamps) on vault mutations without storing raw document text.
+5. **Cryptographic Audit Integration**: Integrates vault mutations (`vault.document_create`, `vault.document_update`, `vault.document_delete`) with Task 13's cryptographic audit log, logging metadata and content SHA-256 hashes without storing raw document body text in audit records.
+
+---
+
 ## Developer Guide & Executable Setup
 
 ### Prerequisites
@@ -109,7 +121,7 @@ To run all CI checks locally prior to committing:
 ├── .github/workflows/ci.yml   # GitHub Actions CI quality gates
 ├── AGENTS.md                  # Master Engineering Handbook
 ├── README.md                  # Developer & Architecture Guide
-├── docs/                      # Architectural specifications & 33 ADRs
+├── docs/                      # Architectural specifications & 34 ADRs
 ├── frontend/                  # React + TypeScript + Vite UI frontend
 └── src-tauri/                 # Rust + Tauri desktop core backend
 ```
