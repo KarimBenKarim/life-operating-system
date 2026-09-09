@@ -1,4 +1,5 @@
 use tauri::Manager;
+use zeroize::Zeroizing;
 
 pub mod db;
 
@@ -26,13 +27,15 @@ pub fn init_app_database<R: tauri::Runtime>(
     let db_name = std::env::var("LIFEOS_DB_NAME").unwrap_or_else(|_| "lifeos.db".to_string());
     let db_path = app_data_dir.join(db_name);
 
-    // Passcode source boundary: Passcode is retrieved from environment variable.
+    // Passcode source boundary: Passcode is retrieved from environment variable
+    // and wrapped immediately in Zeroizing<String> so heap memory is zeroized on drop.
     // Fails closed if no passcode is provided.
     // Note: Acquisition of passcodes via host OS keyring integration or unlock UI is deferred as a scoped follow-up.
-    let passcode =
-        std::env::var("LIFEOS_DB_PASSCODE").map_err(|_| db::DatabaseError::InvalidPasscode)?;
+    let passcode = Zeroizing::new(
+        std::env::var("LIFEOS_DB_PASSCODE").map_err(|_| db::DatabaseError::InvalidPasscode)?,
+    );
 
-    let _conn = db::initialize_and_verify_database(&db_path, &passcode)?;
+    let _conn = db::initialize_and_verify_database(&db_path, passcode.as_str())?;
 
     Ok(())
 }
