@@ -1,7 +1,8 @@
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt::Write;
 
 use crate::db::errors::DatabaseError;
 
@@ -43,7 +44,13 @@ pub struct AuditVerificationReport {
     pub is_valid: bool,
 }
 
-/// Compute canonical SHA-256 hash covering all fields of an audit log entry.
+/// Encode a single string field with a deterministic length prefix (`<len>:<data>;`).
+fn encode_field(buf: &mut String, val: &str) {
+    let _ = write!(buf, "{}:{};", val.len(), val);
+}
+
+/// Compute canonical SHA-256 hash using deterministic length-prefixed encoding.
+/// Prevents boundary ambiguity when field values contain delimiters (`|`, `:`, etc.).
 #[allow(clippy::too_many_arguments)]
 pub fn compute_audit_hash(
     id: i64,
@@ -57,19 +64,19 @@ pub fn compute_audit_hash(
     client_info: Option<&str>,
     previous_hash: &str,
 ) -> String {
-    let canonical = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        id,
-        created_at,
-        user_id.unwrap_or(""),
-        action_type,
-        entity_name,
-        entity_id.unwrap_or(""),
-        before_state.unwrap_or(""),
-        after_state.unwrap_or(""),
-        client_info.unwrap_or(""),
-        previous_hash
-    );
+    let mut canonical = String::with_capacity(512);
+
+    let id_str = id.to_string();
+    encode_field(&mut canonical, &id_str);
+    encode_field(&mut canonical, created_at);
+    encode_field(&mut canonical, user_id.unwrap_or(""));
+    encode_field(&mut canonical, action_type);
+    encode_field(&mut canonical, entity_name);
+    encode_field(&mut canonical, entity_id.unwrap_or(""));
+    encode_field(&mut canonical, before_state.unwrap_or(""));
+    encode_field(&mut canonical, after_state.unwrap_or(""));
+    encode_field(&mut canonical, client_info.unwrap_or(""));
+    encode_field(&mut canonical, previous_hash);
 
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
@@ -77,12 +84,16 @@ pub fn compute_audit_hash(
 }
 
 /// Insert a new cryptographic audit log entry chained to the previous record's hash.
+/// Uses an immediate transaction (`TransactionBehavior::Immediate`) to acquire an immediate
+/// database write lock, guaranteeing atomicity and sequence integrity under concurrent write attempts.
 pub fn log_audit_event(
-    conn: &Connection,
+    conn: &mut Connection,
     event: NewAuditEvent,
 ) -> Result<AuditLogEntry, DatabaseError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
     let mut stmt =
-        conn.prepare("SELECT id, hash FROM system_audit_logs ORDER BY id DESC LIMIT 1;")?;
+        tx.prepare("SELECT id, hash FROM system_audit_logs ORDER BY id DESC LIMIT 1;")?;
 
     let last_record: Option<(i64, String)> = stmt
         .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -109,7 +120,7 @@ pub fn log_audit_event(
         &previous_hash,
     );
 
-    conn.execute(
+    tx.execute(
         "INSERT INTO system_audit_logs (
             id, user_id, action_type, entity_name, entity_id,
             before_state, after_state, client_info, created_at, previous_hash, hash
@@ -128,6 +139,8 @@ pub fn log_audit_event(
             current_hash
         ],
     )?;
+
+    tx.commit()?;
 
     Ok(AuditLogEntry {
         id: next_id,

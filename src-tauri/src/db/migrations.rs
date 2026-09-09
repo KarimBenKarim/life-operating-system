@@ -48,6 +48,7 @@ fn ensure_migrations_table(conn: &Connection) -> Result<(), DatabaseError> {
 }
 
 /// Run all pending versioned migrations inside a single transaction.
+/// Verifies that migration versions are contiguous without gaps.
 pub fn run_migrations(conn: &mut Connection) -> Result<usize, DatabaseError> {
     ensure_migrations_table(conn)?;
 
@@ -69,6 +70,78 @@ pub fn run_migrations(conn: &mut Connection) -> Result<usize, DatabaseError> {
     if pending.is_empty() {
         tx.commit()?;
         return Ok(0);
+    }
+
+    // Verify contiguous migration version sequence without gaps
+    let mut expected_version = max_applied + 1;
+    for m in &pending {
+        if m.version != expected_version {
+            return Err(DatabaseError::MigrationError(format!(
+                "Migration sequence gap detected: expected version {expected_version}, but found version {}",
+                m.version
+            )));
+        }
+        expected_version += 1;
+    }
+
+    let count = pending.len();
+
+    for migration in pending {
+        tx.execute_batch(migration.sql).map_err(|e| {
+            DatabaseError::MigrationError(format!(
+                "Failed to execute migration {} ({}): {e}",
+                migration.version, migration.name
+            ))
+        })?;
+
+        let applied_at = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO _migrations (version, name, applied_at) VALUES (?1, ?2, ?3);",
+            rusqlite::params![migration.version, migration.name, applied_at],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(count)
+}
+
+/// Helper function to execute a custom migration list for testing gap detection.
+#[cfg(test)]
+pub fn run_migrations_custom(
+    conn: &mut Connection,
+    migrations: &[Migration],
+) -> Result<usize, DatabaseError> {
+    ensure_migrations_table(conn)?;
+
+    let tx = conn.transaction()?;
+
+    let mut stmt = tx.prepare("SELECT version FROM _migrations ORDER BY version ASC;")?;
+    let applied_versions: Vec<i32> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<i32>, _>>()?;
+    drop(stmt);
+
+    let max_applied = applied_versions.into_iter().max().unwrap_or(0);
+
+    let pending: Vec<&Migration> = migrations
+        .iter()
+        .filter(|m| m.version > max_applied)
+        .collect();
+
+    if pending.is_empty() {
+        tx.commit()?;
+        return Ok(0);
+    }
+
+    let mut expected_version = max_applied + 1;
+    for m in &pending {
+        if m.version != expected_version {
+            return Err(DatabaseError::MigrationError(format!(
+                "Migration sequence gap detected: expected version {expected_version}, but found version {}",
+                m.version
+            )));
+        }
+        expected_version += 1;
     }
 
     let count = pending.len();

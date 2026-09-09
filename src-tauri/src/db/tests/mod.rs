@@ -1,10 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::db::audit::compute_audit_hash;
+use crate::db::migrations::{run_migrations_custom, Migration};
 use crate::db::{
-    derive_key, generate_salt, get_kdf_metadata_path, log_audit_event, open_database,
-    run_migrations, verify_audit_chain, DatabaseError, NewAuditEvent,
+    derive_key, generate_salt, get_kdf_metadata_path, initialize_and_verify_database,
+    log_audit_event, open_database, run_migrations, verify_audit_chain, DatabaseError,
+    NewAuditEvent,
 };
 
 fn temp_db_path(name: &str) -> PathBuf {
@@ -135,6 +140,75 @@ fn test_migrations_idempotence_and_ordering() {
 }
 
 #[test]
+fn test_migration_gap_detection() {
+    let db_path = temp_db_path("migration_gap");
+    let passcode = "Passcode123!";
+
+    let mut conn = open_database(&db_path, passcode).unwrap();
+
+    let gap_migrations = [
+        Migration {
+            version: 1,
+            name: "V1__init",
+            sql: "CREATE TABLE t1 (id INT);",
+        },
+        Migration {
+            version: 3, // Gap! Version 2 missing
+            name: "V3__gap",
+            sql: "CREATE TABLE t3 (id INT);",
+        },
+    ];
+
+    let err = run_migrations_custom(&mut conn, &gap_migrations).unwrap_err();
+    match err {
+        DatabaseError::MigrationError(msg) => {
+            assert!(msg.contains("Migration sequence gap detected"));
+        }
+        other => panic!("Expected MigrationError for version gap, got: {other:?}"),
+    }
+
+    drop(conn);
+    let _ = fs::remove_dir_all(db_path.parent().unwrap());
+}
+
+#[test]
+fn test_audit_canonicalization_unambiguous_delimiters() {
+    // Test two field configurations that would collide under naive delimiter joining:
+    // Config 1: action_type = "a|b", entity_name = "c"
+    // Config 2: action_type = "a", entity_name = "b|c"
+    let hash1 = compute_audit_hash(
+        1,
+        "2026-09-08T00:00:00Z",
+        Some("user1"),
+        "a|b",
+        "c",
+        None,
+        None,
+        None,
+        None,
+        "prev_hash",
+    );
+
+    let hash2 = compute_audit_hash(
+        1,
+        "2026-09-08T00:00:00Z",
+        Some("user1"),
+        "a",
+        "b|c",
+        None,
+        None,
+        None,
+        None,
+        "prev_hash",
+    );
+
+    assert_ne!(
+        hash1, hash2,
+        "Length-prefixed encoding MUST prevent boundary ambiguity collisions"
+    );
+}
+
+#[test]
 fn test_audit_log_valid_chain() {
     let db_path = temp_db_path("audit_valid");
     let mut conn = open_database(&db_path, "Pass123!").unwrap();
@@ -142,7 +216,7 @@ fn test_audit_log_valid_chain() {
 
     for i in 1..=5 {
         log_audit_event(
-            &conn,
+            &mut conn,
             NewAuditEvent {
                 user_id: Some("user_01".to_string()),
                 action_type: format!("action_{i}"),
@@ -165,6 +239,106 @@ fn test_audit_log_valid_chain() {
 }
 
 #[test]
+fn test_audit_concurrent_writes() {
+    let db_path = temp_db_path("audit_concurrent");
+    let passcode = "ConcurrentPass123!";
+
+    {
+        let mut conn = open_database(&db_path, passcode).unwrap();
+        run_migrations(&mut conn).unwrap();
+    }
+
+    // Shared thread-safe lock for SQLite database connection access across threads
+    let conn = open_database(&db_path, passcode).unwrap();
+    let conn_arc = Arc::new(Mutex::new(conn));
+
+    let threads: Vec<_> = (0..5)
+        .map(|t_idx| {
+            let conn_clone = Arc::clone(&conn_arc);
+            thread::spawn(move || {
+                for i in 0..5 {
+                    let mut conn_guard = conn_clone.lock().unwrap();
+                    log_audit_event(
+                        &mut conn_guard,
+                        NewAuditEvent {
+                            user_id: Some(format!("user_{t_idx}")),
+                            action_type: format!("thread_{t_idx}_event_{i}"),
+                            entity_name: "task".into(),
+                            entity_id: None,
+                            before_state: None,
+                            after_state: None,
+                            client_info: None,
+                        },
+                    )
+                    .unwrap();
+                }
+            })
+        })
+        .collect();
+
+    for t in threads {
+        t.join().unwrap();
+    }
+
+    let conn_guard = conn_arc.lock().unwrap();
+    let report = verify_audit_chain(&conn_guard).expect("Concurrent audit chain must remain valid");
+    assert_eq!(report.total_records, 25);
+    assert!(report.is_valid);
+
+    drop(conn_guard);
+    let _ = fs::remove_dir_all(db_path.parent().unwrap());
+}
+
+#[test]
+fn test_startup_audit_verification() {
+    let db_path = temp_db_path("startup_verify");
+    let passcode = "StartupPass123!";
+
+    // Create & initialize database
+    {
+        let mut conn = initialize_and_verify_database(&db_path, passcode).unwrap();
+        log_audit_event(
+            &mut conn,
+            NewAuditEvent {
+                user_id: Some("u1".into()),
+                action_type: "auth.login".into(),
+                entity_name: "user".into(),
+                entity_id: None,
+                before_state: None,
+                after_state: None,
+                client_info: None,
+            },
+        )
+        .unwrap();
+    }
+
+    // Normal startup verification succeeds
+    {
+        let _conn = initialize_and_verify_database(&db_path, passcode)
+            .expect("Startup verification should succeed on untampered database");
+    }
+
+    // Tamper with audit log record directly
+    {
+        let conn = open_database(&db_path, passcode).unwrap();
+        conn.execute(
+            "UPDATE system_audit_logs SET action_type = 'TAMPERED' WHERE id = 1;",
+            [],
+        )
+        .unwrap();
+    }
+
+    // Startup verification fails on tampered database
+    let err = initialize_and_verify_database(&db_path, passcode).unwrap_err();
+    match err {
+        DatabaseError::AuditTampered { record_id, .. } => assert_eq!(record_id, 1),
+        other => panic!("Expected AuditTampered error on startup, got: {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(db_path.parent().unwrap());
+}
+
+#[test]
 fn test_audit_tamper_first_record_modification() {
     let db_path = temp_db_path("audit_first_mod");
     let mut conn = open_database(&db_path, "Pass123!").unwrap();
@@ -172,7 +346,7 @@ fn test_audit_tamper_first_record_modification() {
 
     for i in 1..=3 {
         log_audit_event(
-            &conn,
+            &mut conn,
             NewAuditEvent {
                 user_id: Some("user_1".into()),
                 action_type: format!("type_{i}"),
@@ -211,7 +385,7 @@ fn test_audit_tamper_middle_record_modification() {
 
     for i in 1..=5 {
         log_audit_event(
-            &conn,
+            &mut conn,
             NewAuditEvent {
                 user_id: Some("user_1".into()),
                 action_type: format!("type_{i}"),
@@ -250,7 +424,7 @@ fn test_audit_tamper_last_record_modification() {
 
     for i in 1..=3 {
         log_audit_event(
-            &conn,
+            &mut conn,
             NewAuditEvent {
                 user_id: Some("user_1".into()),
                 action_type: format!("type_{i}"),
@@ -289,7 +463,7 @@ fn test_audit_tamper_deletion_first_and_middle() {
 
     for i in 1..=4 {
         log_audit_event(
-            &conn,
+            &mut conn,
             NewAuditEvent {
                 user_id: Some("user_1".into()),
                 action_type: format!("type_{i}"),
@@ -325,7 +499,7 @@ fn test_audit_tamper_tail_deletion_behavior() {
 
     for i in 1..=4 {
         log_audit_event(
-            &conn,
+            &mut conn,
             NewAuditEvent {
                 user_id: Some("user_1".into()),
                 action_type: format!("type_{i}"),

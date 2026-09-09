@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::db::audit::verify_audit_chain;
 use crate::db::crypto::{
     derive_key, generate_salt, ARGON2_M_COST, ARGON2_P_COST, ARGON2_T_COST, SALT_BYTES,
 };
 use crate::db::errors::DatabaseError;
+use crate::db::migrations::run_migrations;
 
 /// Persistent KDF salt and parameters metadata stored alongside the database file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,4 +136,19 @@ pub fn open_database(db_path: &Path, passcode: &str) -> Result<Connection, Datab
         Ok(_) => Ok(conn),
         Err(_e) => Err(DatabaseError::InvalidPasscode),
     }
+}
+
+/// Initialize the database connection, execute pending migrations, and run mandatory startup
+/// verification of the audit log hash chain. Returns the ready Connection if valid.
+///
+/// Note: Full system lockdown and local vault directory freezing (as described in ADR 0025)
+/// is deferred as a system-level runtime orchestration follow-up.
+pub fn initialize_and_verify_database(
+    db_path: &Path,
+    passcode: &str,
+) -> Result<Connection, DatabaseError> {
+    let mut conn = open_database(db_path, passcode)?;
+    run_migrations(&mut conn)?;
+    verify_audit_chain(&conn)?;
+    Ok(conn)
 }
