@@ -1,11 +1,13 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::db::audit::verify_audit_chain;
 use crate::db::crypto::{
-    derive_key, generate_salt, ARGON2_M_COST, ARGON2_P_COST, ARGON2_T_COST, SALT_BYTES,
+    derive_key, format_pragma_key, generate_salt, ARGON2_M_COST, ARGON2_P_COST, ARGON2_T_COST,
+    SALT_BYTES,
 };
 use crate::db::errors::DatabaseError;
 use crate::db::migrations::run_migrations;
@@ -63,32 +65,60 @@ pub fn get_kdf_metadata_path(db_path: &Path) -> PathBuf {
     path
 }
 
-/// Load existing KDF metadata or generate and persist new metadata if missing.
+/// Helper to read existing KDF metadata with retries if another process is mid-write.
+fn read_kdf_metadata_with_retry(
+    kdf_path: &Path,
+) -> Result<(KdfMetadata, [u8; SALT_BYTES]), DatabaseError> {
+    for _ in 0..50 {
+        if let Ok(content) = fs::read_to_string(kdf_path) {
+            if let Ok(metadata) = serde_json::from_str::<KdfMetadata>(&content) {
+                if let Ok(salt) = metadata.salt_bytes() {
+                    return Ok((metadata, salt));
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let content = fs::read_to_string(kdf_path).map_err(DatabaseError::Io)?;
+    let metadata: KdfMetadata = serde_json::from_str(&content).map_err(|e| {
+        DatabaseError::InvalidKdfMetadata(format!("Failed to parse KDF metadata JSON: {e}"))
+    })?;
+    let salt = metadata.salt_bytes()?;
+    Ok((metadata, salt))
+}
+
+/// Load existing KDF metadata or generate and persist new metadata atomically (O_CREAT | O_EXCL) if missing.
+/// Ensures first-run initialization is completely race-safe across concurrent processes/threads.
 pub fn load_or_create_kdf_metadata(
     db_path: &Path,
 ) -> Result<(KdfMetadata, [u8; SALT_BYTES]), DatabaseError> {
     let kdf_path = get_kdf_metadata_path(db_path);
 
-    if kdf_path.exists() {
-        let content = fs::read_to_string(&kdf_path).map_err(DatabaseError::Io)?;
-        let metadata: KdfMetadata = serde_json::from_str(&content).map_err(|e| {
-            DatabaseError::InvalidKdfMetadata(format!("Failed to parse KDF metadata JSON: {e}"))
-        })?;
-        let salt = metadata.salt_bytes()?;
-        Ok((metadata, salt))
-    } else {
-        let salt = generate_salt();
-        let metadata = KdfMetadata::new(&salt);
-        let content = serde_json::to_string_pretty(&metadata).map_err(|e| {
-            DatabaseError::InvalidKdfMetadata(format!("Failed to serialize KDF metadata: {e}"))
-        })?;
+    if let Some(parent) = kdf_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
-        if let Some(parent) = kdf_path.parent() {
-            fs::create_dir_all(parent)?;
+    let salt = generate_salt();
+    let metadata = KdfMetadata::new(&salt);
+    let content = serde_json::to_string_pretty(&metadata).map_err(|e| {
+        DatabaseError::InvalidKdfMetadata(format!("Failed to serialize KDF metadata: {e}"))
+    })?;
+
+    let create_result = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&kdf_path);
+
+    match create_result {
+        Ok(mut file) => {
+            file.write_all(content.as_bytes())?;
+            Ok((metadata, salt))
         }
-        fs::write(&kdf_path, content)?;
-
-        Ok((metadata, salt))
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            read_kdf_metadata_with_retry(&kdf_path)
+        }
+        Err(e) => Err(DatabaseError::Io(e)),
     }
 }
 
@@ -107,8 +137,9 @@ pub fn open_database(db_path: &Path, passcode: &str) -> Result<Connection, Datab
 
     let conn = Connection::open(db_path)?;
 
-    // Configure SQLCipher key using raw key syntax x'HEX' to avoid double-KDF
-    let pragma_key = format!("PRAGMA key = \"x'{}'\";", key.to_pragma_key_hex().as_str());
+    // Configure SQLCipher key using raw key syntax x'HEX' to avoid double-KDF.
+    // Wrap PRAGMA statement in Zeroizing<String> to sanitize heap memory on drop.
+    let pragma_key = format_pragma_key(&key);
     if conn.execute_batch(&pragma_key).is_err() {
         return Err(DatabaseError::InvalidPasscode);
     }

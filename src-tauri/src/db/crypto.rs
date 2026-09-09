@@ -36,12 +36,20 @@ impl DerivedKey {
         &self.bytes
     }
 
-    /// Convert derived key bytes into a zeroizing hex string formatted for SQLCipher PRAGMA key:
-    /// `x'<64_hex_digits>'`.
+    /// Convert derived key bytes into a zeroizing hex string formatted for SQLCipher PRAGMA key.
     pub fn to_pragma_key_hex(&self) -> Zeroizing<String> {
         let hex_str = hex::encode(*self.bytes);
         Zeroizing::new(hex_str)
     }
+}
+
+/// Format derived key into a zeroizing PRAGMA key statement for SQLCipher:
+/// `PRAGMA key = "x'<64_hex_digits>'";`.
+pub fn format_pragma_key(key: &DerivedKey) -> Zeroizing<String> {
+    Zeroizing::new(format!(
+        "PRAGMA key = \"x'{}'\";",
+        key.to_pragma_key_hex().as_str()
+    ))
 }
 
 impl fmt::Debug for DerivedKey {

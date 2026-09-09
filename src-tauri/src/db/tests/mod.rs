@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::db::audit::compute_audit_hash;
+use crate::db::crypto::format_pragma_key;
 use crate::db::migrations::{run_migrations_custom, Migration};
 use crate::db::{
     derive_key, generate_salt, get_kdf_metadata_path, initialize_and_verify_database,
@@ -73,6 +74,40 @@ fn test_database_lifecycle_close_reopen_with_persisted_salt() {
 }
 
 #[test]
+fn test_concurrent_first_open_salt_race() {
+    let db_path = temp_db_path("salt_race");
+    let passcode = "RacePasscode123!";
+
+    let num_threads = 5;
+    let barrier = Arc::new(Barrier::new(num_threads));
+
+    let threads: Vec<_> = (0..num_threads)
+        .map(|_| {
+            let db_path = db_path.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                open_database(&db_path, passcode)
+                    .expect("Concurrent first-open MUST succeed and share atomic salt")
+            })
+        })
+        .collect();
+
+    for t in threads {
+        let conn = t.join().unwrap();
+        drop(conn);
+    }
+
+    let kdf_path = get_kdf_metadata_path(&db_path);
+    assert!(kdf_path.exists());
+
+    let conn_final = open_database(&db_path, passcode).expect("Database MUST remain openable");
+    drop(conn_final);
+
+    let _ = fs::remove_dir_all(db_path.parent().unwrap());
+}
+
+#[test]
 fn test_security_plaintext_sqlite_rejection() {
     let db_path = temp_db_path("plaintext");
 
@@ -108,6 +143,17 @@ fn test_no_secret_leakage_in_debug_formatting() {
     assert!(!display_str.contains("MyPasscode"));
     assert!(debug_str.contains("[REDACTED_KEY]"));
     assert_eq!(display_str, "[REDACTED_KEY]");
+}
+
+#[test]
+fn test_pragma_key_zeroization_lifecycle() {
+    let salt = generate_salt();
+    let key = derive_key("MyPasscode123", &salt).unwrap();
+
+    let pragma_key = format_pragma_key(&key);
+    assert!(pragma_key.starts_with("PRAGMA key = \"x'"));
+    assert!(pragma_key.ends_with("'\";"));
+    assert_eq!(pragma_key.len(), 83);
 }
 
 #[test]
