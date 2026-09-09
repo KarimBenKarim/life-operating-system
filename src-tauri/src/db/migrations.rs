@@ -73,15 +73,14 @@ pub fn run_migrations(conn: &mut Connection) -> Result<usize, DatabaseError> {
     }
 
     // Verify contiguous migration version sequence without gaps
-    let mut expected_version = max_applied + 1;
-    for m in &pending {
+    for (idx, m) in pending.iter().enumerate() {
+        let expected_version = max_applied + 1 + (idx as i32);
         if m.version != expected_version {
             return Err(DatabaseError::MigrationError(format!(
                 "Migration sequence gap detected: expected version {expected_version}, but found version {}",
                 m.version
             )));
         }
-        expected_version += 1;
     }
 
     let count = pending.len();
@@ -133,15 +132,14 @@ pub fn run_migrations_custom(
         return Ok(0);
     }
 
-    let mut expected_version = max_applied + 1;
-    for m in &pending {
+    for (idx, m) in pending.iter().enumerate() {
+        let expected_version = max_applied + 1 + (idx as i32);
         if m.version != expected_version {
             return Err(DatabaseError::MigrationError(format!(
                 "Migration sequence gap detected: expected version {expected_version}, but found version {}",
                 m.version
             )));
         }
-        expected_version += 1;
     }
 
     let count = pending.len();
