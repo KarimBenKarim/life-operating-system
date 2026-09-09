@@ -22,7 +22,7 @@ Life OS is built upon a **decoupled, offline-first personal digital container**.
 |  monitors, context-masking proxy, local ONNX embeddings, and Local Event Bus.      |
 +-----------------------------------------------------------------------------------+
                                          |
-                                         | (SQLCipher AES-256-GCM / OS Keychain Access)
+                                         | (SQLCipher AES-256-CBC / OS Keychain Access)
                                          v
 +-----------------------------------------------------------------------------------+
 |                          TRUST ZONE 3: STORAGE ENCLAVE                            |
@@ -85,24 +85,31 @@ Life OS is built upon a **decoupled, offline-first personal digital container**.
 
 ## 3. Data Encryption Architecture
 
-### 1. Encryption at Rest (SQLCipher & AES-256-GCM)
-- **Relational Cache & Vector Indexes**: The local SQLite database (`lifeos.db`) and vector index tables are fully encrypted at-rest using **SQLCipher (AES-256-GCM)**.
+### 1. Encryption at Rest (SQLCipher 4.5.3 Community / AES-256-CBC)
+- **Relational Cache & Vector Indexes**: The local SQLite database (`lifeos.db`) and vector index tables are fully encrypted at-rest using **SQLCipher 4.5.3 Community** (`rusqlite 0.31.0` -> `libsqlite3-sys 0.28.0` with `bundled-sqlcipher`).
+- **Cipher Construction**: SQLCipher encrypts at the page level using **AES-256-CBC** with per-page **HMAC-SHA512** integrity verification.
 - **Key Derivation Pipeline**:
-  - The user's Master Passcode is never stored on disk.
-  - Upon startup, the passcode is combined with a cryptographically secure random salt (stored in the system settings file) and passed through **Argon2id** (configured with $m=65536$, $t=3$, $p=4$) to derive a 256-bit key.
-  - This derived key is passed to SQLCipher to decrypt the SQLite master page in-memory.
+  - The user's Master Passcode is never persisted on disk or stored in logs.
+  - Upon startup, the passcode is combined with a cryptographically secure 16-byte (128-bit) random salt (persisted in a non-secret `<db_path>.kdf` metadata file) and passed through **Argon2id** ($m=65536$, $t=3$, $p=4$) to derive a 256-bit key.
+  - The derived 256-bit key is formatted using raw-key syntax (`PRAGMA key = "x'<64_hex_digits>'";`), which instructs SQLCipher to use the key directly as its master key without running an internal secondary PBKDF2 derivation.
+  - Derived key material in memory is wrapped in zeroizing containers (`Zeroizing<T>`) to guarantee immediate memory sanitization when dropped.
 
 ```mermaid
 graph TD
-    Passcode[User Master Passcode] --> Argon2[Argon2id Key Derivation Function]
-    Salt[Cryptographic Salt on Disk] --> Argon2
-    Argon2 --> DerivedKey[256-bit Decryption Key]
-    DerivedKey --> SQLCipher[SQLCipher Engine]
+    Passcode[User Master Passcode] --> Argon2[Argon2id KDF: m=65536, t=3, p=4]
+    Salt[Persisted 16-byte Salt: db_path.kdf] --> Argon2
+    Argon2 --> DerivedKey[Zeroized 256-bit Key]
+    DerivedKey --> RawPragma[PRAGMA key = x'HEX']
+    RawPragma --> SQLCipher[SQLCipher 4.5.3 Engine]
     EncryptedDB[(Encrypted lifeos.db on Disk)] --> SQLCipher
     SQLCipher --> DecryptedDB[(In-Memory Decrypted Cache)]
 ```
 
-### 2. Encryption in Transit
+### 2. WAL / SHM Security Behavior
+- **Write-Ahead Log (`.db-wal`)**: Page writes in WAL mode are encrypted page-by-page by SQLCipher using the exact same page key and HMAC parameters as the main database file (`.db`). Sensitive data inside `.db-wal` is fully encrypted at rest.
+- **Shared Memory (`.db-shm`)**: Ephemeral WAL index containing frame/page index headers without raw data payloads. It is deleted or truncated upon clean database closure.
+
+### 3. Encryption in Transit
 - **TLS 1.3**: Mandatory for all HTTPS connections. TLS 1.2 is supported only with modern AEAD cipher suites:
   - `TLS_AES_256_GCM_SHA384`
   - `TLS_CHACHA20_POLY1305_SHA256`
@@ -126,19 +133,29 @@ graph TD
 
 ## 5. System Audit Logging & Tamper Detection
 
-To ensure absolute operational accountability and detect unauthorized background file modifications, Life OS implements an **Immutable Cryptographic Audit Trail**.
+To ensure operational accountability and detect unauthorized database record modifications or record deletion, Life OS implements an **Immutable Cryptographic Audit Trail** (ADR 0025).
 
 - **Log Schema**: Every audit log record registers:
-  - `id`: Monotonically increasing BIGINT.
-  - `timestamp`: UTC ISO 8601.
+  - `id`: Monotonically increasing INTEGER PRIMARY KEY.
+  - `user_id`: Optional text identifier.
   - `action_type`: Structured string (e.g., `goal.completed`, `auth.login_attempt`).
-  - `entity_id`: UUID of the affected domain.
-  - `before_state_hash`: SHA-256 hash of the record state before modification.
-  - `after_state_hash`: SHA-256 hash of the record state after modification.
-  - `previous_log_hash`: SHA-256 hash of the *immediately preceding* audit log row.
-- **Chained Cryptographic Integrity (Hash Chaining)**: Each row's signature is calculated as:
-  $$Hash_n = SHA256(id_n + timestamp_n + action_n + prev\_hash_{n-1} + after\_state\_hash_n)$$
-  *Tamper Detection*: Any modification of past logs breaks the hash chain. At startup, the local core runs a background check to recalculate the chain. If a hash mismatch is detected, the system immediately suspends writing, locks local vaults, and alerts the user of potential database tampering.
+  - `entity_name`: Target entity name.
+  - `entity_id`: Optional target UUID.
+  - `before_state`: Optional pre-mutation state text/json.
+  - `after_state`: Optional post-mutation state text/json.
+  - `client_info`: Source client information.
+  - `created_at`: UTC ISO 8601 timestamp string.
+  - `previous_hash`: SHA-256 hash of the preceding record (or genesis constant for row 1).
+  - `hash`: SHA-256 hash of the current record.
+- **Tagged Length-Prefixed Canonicalization & Serialization**:
+  - Genesis constant for row 1: `0000000000000000000000000000000000000000000000000000000000000000`.
+  - Canonical hash calculation uses tagged length-prefixed encoding (`S:<len>:<val>;` for string, `N;` for None), unambiguously distinguishing `None` from `Some("")`.
+  - Concurrency & Atomicity: `log_audit_event` uses SQLite `TransactionBehavior::Immediate` transactions to acquire write locks immediately, preventing write races across concurrent writers.
+- **Startup Verification Integration**:
+  - Tauri application setup hook (`build_tauri_app`) invokes `init_app_database`, executing pending migrations and running `verify_audit_chain` on startup before finalizing initialization.
+- **Verification Guarantees & Limitations**:
+  - **Guaranteed Detection**: Modifying any field in an existing record, deleting a record in the first or middle positions, inserting a forged record, or reordering rows invalidates the SHA-256 chain and is detected during `verify_audit_chain`.
+  - **Tail Deletion Limitation**: Deleting trailing records without modifying preceding records leaves the remaining prefix chain self-consistent. Detecting tail deletion requires an external head/count checkpoint (system-level follow-up).
 
 ---
 

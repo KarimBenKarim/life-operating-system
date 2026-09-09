@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -172,10 +172,38 @@ fn test_migration_gap_detection() {
 }
 
 #[test]
+fn test_corrupted_applied_migration_history_gap() {
+    let db_path = temp_db_path("corrupted_migrations");
+    let passcode = "Passcode123!";
+
+    let mut conn = open_database(&db_path, passcode).unwrap();
+
+    // Manually create corrupted _migrations table with history [1, 3]
+    conn.execute(
+        "CREATE TABLE _migrations (version INT PRIMARY KEY, name TEXT, applied_at TEXT);",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO _migrations VALUES (1, 'V1', 'now'), (3, 'V3', 'now');",
+        [],
+    )
+    .unwrap();
+
+    let err = run_migrations(&mut conn).unwrap_err();
+    match err {
+        DatabaseError::MigrationError(msg) => {
+            assert!(msg.contains("Corrupted migration history gap detected"));
+        }
+        other => panic!("Expected MigrationError for corrupted applied history, got: {other:?}"),
+    }
+
+    drop(conn);
+    let _ = fs::remove_dir_all(db_path.parent().unwrap());
+}
+
+#[test]
 fn test_audit_canonicalization_unambiguous_delimiters() {
-    // Test two field configurations that would collide under naive delimiter joining:
-    // Config 1: action_type = "a|b", entity_name = "c"
-    // Config 2: action_type = "a", entity_name = "b|c"
     let hash1 = compute_audit_hash(
         1,
         "2026-09-08T00:00:00Z",
@@ -205,6 +233,40 @@ fn test_audit_canonicalization_unambiguous_delimiters() {
     assert_ne!(
         hash1, hash2,
         "Length-prefixed encoding MUST prevent boundary ambiguity collisions"
+    );
+}
+
+#[test]
+fn test_audit_canonicalization_none_vs_empty_string() {
+    let hash_none = compute_audit_hash(
+        1,
+        "2026-09-08T00:00:00Z",
+        None,
+        "action",
+        "entity",
+        None,
+        None,
+        None,
+        None,
+        "prev_hash",
+    );
+
+    let hash_empty = compute_audit_hash(
+        1,
+        "2026-09-08T00:00:00Z",
+        Some(""),
+        "action",
+        "entity",
+        None,
+        None,
+        None,
+        None,
+        "prev_hash",
+    );
+
+    assert_ne!(
+        hash_none, hash_empty,
+        "None and Some(\"\") MUST produce distinct canonical hashes"
     );
 }
 
@@ -243,23 +305,31 @@ fn test_audit_concurrent_writes() {
     let db_path = temp_db_path("audit_concurrent");
     let passcode = "ConcurrentPass123!";
 
+    // Create database and run initial migrations
     {
         let mut conn = open_database(&db_path, passcode).unwrap();
         run_migrations(&mut conn).unwrap();
     }
 
-    // Shared thread-safe lock for SQLite database connection access across threads
-    let conn = open_database(&db_path, passcode).unwrap();
-    let conn_arc = Arc::new(Mutex::new(conn));
+    let num_connections = 5;
+    let events_per_thread = 5;
+    let barrier = Arc::new(Barrier::new(num_connections));
 
-    let threads: Vec<_> = (0..5)
+    let threads: Vec<_> = (0..num_connections)
         .map(|t_idx| {
-            let conn_clone = Arc::clone(&conn_arc);
+            let db_path = db_path.clone();
+            let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
-                for i in 0..5 {
-                    let mut conn_guard = conn_clone.lock().unwrap();
+                // Open an INDEPENDENT SQLite database connection for each thread
+                let mut conn = open_database(&db_path, passcode)
+                    .expect("Each thread must open its own independent SQLite connection");
+
+                // Wait for all threads to reach the barrier before starting concurrent writes
+                barrier.wait();
+
+                for i in 0..events_per_thread {
                     log_audit_event(
-                        &mut conn_guard,
+                        &mut conn,
                         NewAuditEvent {
                             user_id: Some(format!("user_{t_idx}")),
                             action_type: format!("thread_{t_idx}_event_{i}"),
@@ -270,7 +340,9 @@ fn test_audit_concurrent_writes() {
                             client_info: None,
                         },
                     )
-                    .unwrap();
+                    .expect(
+                        "Concurrent audit write must succeed under TransactionBehavior::Immediate",
+                    );
                 }
             })
         })
@@ -280,12 +352,34 @@ fn test_audit_concurrent_writes() {
         t.join().unwrap();
     }
 
-    let conn_guard = conn_arc.lock().unwrap();
-    let report = verify_audit_chain(&conn_guard).expect("Concurrent audit chain must remain valid");
-    assert_eq!(report.total_records, 25);
+    // Verify final database state across independent connection
+    let conn = open_database(&db_path, passcode).unwrap();
+    let report = verify_audit_chain(&conn).expect("Concurrent audit chain must remain valid");
+    assert_eq!(
+        report.total_records,
+        num_connections * events_per_thread,
+        "Zero events lost"
+    );
     assert!(report.is_valid);
 
-    drop(conn_guard);
+    // Verify all IDs are contiguous 1..25 with no duplicates
+    let ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM system_audit_logs ORDER BY id ASC;")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+
+    let expected_ids: Vec<i64> = (1..=(num_connections * events_per_thread) as i64).collect();
+    assert_eq!(
+        ids, expected_ids,
+        "IDs MUST be contiguous with no gaps or duplicates"
+    );
+
+    drop(conn);
     let _ = fs::remove_dir_all(db_path.parent().unwrap());
 }
 

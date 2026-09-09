@@ -48,7 +48,7 @@ fn ensure_migrations_table(conn: &Connection) -> Result<(), DatabaseError> {
 }
 
 /// Run all pending versioned migrations inside a single transaction.
-/// Verifies that migration versions are contiguous without gaps.
+/// Verifies that applied and pending migration versions are strictly contiguous without gaps.
 pub fn run_migrations(conn: &mut Connection) -> Result<usize, DatabaseError> {
     ensure_migrations_table(conn)?;
 
@@ -59,6 +59,16 @@ pub fn run_migrations(conn: &mut Connection) -> Result<usize, DatabaseError> {
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<i32>, _>>()?;
     drop(stmt);
+
+    // Validate continuity of already-applied migration history starting at version 1
+    for (idx, &ver) in applied_versions.iter().enumerate() {
+        let expected = (idx as i32) + 1;
+        if ver != expected {
+            return Err(DatabaseError::MigrationError(format!(
+                "Corrupted migration history gap detected in _migrations: expected version {expected}, found {ver}"
+            )));
+        }
+    }
 
     let max_applied = applied_versions.into_iter().max().unwrap_or(0);
 
@@ -72,7 +82,7 @@ pub fn run_migrations(conn: &mut Connection) -> Result<usize, DatabaseError> {
         return Ok(0);
     }
 
-    // Verify contiguous migration version sequence without gaps
+    // Verify contiguous pending migration version sequence without gaps
     for (idx, m) in pending.iter().enumerate() {
         let expected_version = max_applied + 1 + (idx as i32);
         if m.version != expected_version {
@@ -119,6 +129,15 @@ pub fn run_migrations_custom(
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<i32>, _>>()?;
     drop(stmt);
+
+    for (idx, &ver) in applied_versions.iter().enumerate() {
+        let expected = (idx as i32) + 1;
+        if ver != expected {
+            return Err(DatabaseError::MigrationError(format!(
+                "Corrupted migration history gap detected in _migrations: expected version {expected}, found {ver}"
+            )));
+        }
+    }
 
     let max_applied = applied_versions.into_iter().max().unwrap_or(0);
 

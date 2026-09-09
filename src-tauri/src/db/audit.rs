@@ -44,13 +44,24 @@ pub struct AuditVerificationReport {
     pub is_valid: bool,
 }
 
-/// Encode a single string field with a deterministic length prefix (`<len>:<data>;`).
-fn encode_field(buf: &mut String, val: &str) {
-    let _ = write!(buf, "{}:{};", val.len(), val);
+/// Encode a mandatory string field with a deterministic tagged length prefix (`S:<len>:<data>;`).
+fn encode_string_field(buf: &mut String, val: &str) {
+    let _ = write!(buf, "S:{}:{val};", val.len());
 }
 
-/// Compute canonical SHA-256 hash using deterministic length-prefixed encoding.
-/// Prevents boundary ambiguity when field values contain delimiters (`|`, `:`, etc.).
+/// Encode an optional string field with tagged markers (`N;` for None, `S:<len>:<data>;` for Some).
+/// Unambiguously distinguishes `None` from `Some("")`.
+fn encode_option_field(buf: &mut String, val: Option<&str>) {
+    match val {
+        Some(v) => {
+            let _ = write!(buf, "S:{}:{v};", v.len());
+        }
+        None => buf.push_str("N;"),
+    }
+}
+
+/// Compute canonical SHA-256 hash using tagged length-prefixed encoding.
+/// Unambiguously distinguishes `None` from `Some("")` and prevents boundary collisions.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_audit_hash(
     id: i64,
@@ -67,16 +78,16 @@ pub fn compute_audit_hash(
     let mut canonical = String::with_capacity(512);
 
     let id_str = id.to_string();
-    encode_field(&mut canonical, &id_str);
-    encode_field(&mut canonical, created_at);
-    encode_field(&mut canonical, user_id.unwrap_or(""));
-    encode_field(&mut canonical, action_type);
-    encode_field(&mut canonical, entity_name);
-    encode_field(&mut canonical, entity_id.unwrap_or(""));
-    encode_field(&mut canonical, before_state.unwrap_or(""));
-    encode_field(&mut canonical, after_state.unwrap_or(""));
-    encode_field(&mut canonical, client_info.unwrap_or(""));
-    encode_field(&mut canonical, previous_hash);
+    encode_string_field(&mut canonical, &id_str);
+    encode_string_field(&mut canonical, created_at);
+    encode_option_field(&mut canonical, user_id);
+    encode_string_field(&mut canonical, action_type);
+    encode_string_field(&mut canonical, entity_name);
+    encode_option_field(&mut canonical, entity_id);
+    encode_option_field(&mut canonical, before_state);
+    encode_option_field(&mut canonical, after_state);
+    encode_option_field(&mut canonical, client_info);
+    encode_string_field(&mut canonical, previous_hash);
 
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
