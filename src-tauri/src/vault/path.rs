@@ -47,6 +47,13 @@ pub fn validate_and_resolve_relative_path(
         ));
     }
 
+    // Explicitly check path segments for dot ('.') or dot-dot ('..') components
+    for segment in normalized.split('/') {
+        if segment == "." || segment == ".." {
+            return Err(VaultError::PathTraversal(rel_path_str.to_string()));
+        }
+    }
+
     let rel_path = Path::new(&normalized);
 
     // Inspect individual path components
@@ -67,7 +74,9 @@ pub fn validate_and_resolve_relative_path(
                     return Err(VaultError::PathTraversal(rel_path_str.to_string()));
                 }
             }
-            Component::CurDir => {}
+            Component::CurDir => {
+                return Err(VaultError::PathTraversal(rel_path_str.to_string()));
+            }
         }
     }
 

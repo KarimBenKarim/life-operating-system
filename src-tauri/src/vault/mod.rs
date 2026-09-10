@@ -63,7 +63,23 @@ impl Vault {
     ) -> Result<VaultIndexRecord, VaultError> {
         let full_path = validate_and_resolve_relative_path(&self.vault_root, relative_path)?;
 
-        let existing = self.get_document_metadata(conn, relative_path).ok();
+        let existing_res = self.get_document_metadata(conn, relative_path);
+
+        let existing = match existing_res {
+            Ok(record) => Some(record),
+            Err(VaultError::NotFound(_)) => None,
+            Err(err) => return Err(err),
+        };
+
+        if let Some(ref prior_record) = existing {
+            if doc.metadata.id != prior_record.id {
+                return Err(VaultError::IdMismatch {
+                    path: relative_path.to_string(),
+                    expected: prior_record.id.clone(),
+                    found: doc.metadata.id.clone(),
+                });
+            }
+        }
 
         let serialized = doc.to_markdown_string()?;
         let size_bytes = serialized.len() as i64;

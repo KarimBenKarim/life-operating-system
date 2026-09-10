@@ -23,6 +23,13 @@ pub enum VaultError {
     #[error("Document already exists: {0}")]
     AlreadyExists(String),
 
+    #[error("Document ID mismatch for path '{path}': expected '{expected}', found '{found}'")]
+    IdMismatch {
+        path: String,
+        expected: String,
+        found: String,
+    },
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

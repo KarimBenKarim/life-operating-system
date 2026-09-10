@@ -309,3 +309,134 @@ fn test_vault_crud_and_indexing_and_audit() {
     drop(conn);
     let _ = fs::remove_dir_all(vault_root.parent().unwrap());
 }
+
+#[test]
+fn test_stable_id_invariant_and_mismatch_rejection() {
+    let (vault_root, db_path) = temp_vault_dir("stable_id");
+    let passcode = "VaultPasscode123!";
+
+    let mut conn = open_database(&db_path, passcode).unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let vault = Vault::new(&vault_root).unwrap();
+
+    // A. Create document with UUID-A
+    let mut doc_a = VaultDocument::new("Original Title", "Original Body");
+    let uuid_a = doc_a.metadata.id.clone();
+
+    vault
+        .save_document(&mut conn, "notes/stable.md", &mut doc_a)
+        .unwrap();
+
+    // B. Update same path with UUID-A -> succeeds
+    let mut doc_a_updated = doc_a.clone();
+    doc_a_updated.metadata.title = "Original Title Updated".to_string();
+
+    let res_a = vault.save_document(&mut conn, "notes/stable.md", &mut doc_a_updated);
+    assert!(res_a.is_ok());
+    assert_eq!(res_a.unwrap().id, uuid_a);
+
+    // C. Update same path with UUID-B -> rejected
+    let mut doc_b = VaultDocument::new("Mismatched Title", "Mismatched Body");
+    let uuid_b = doc_b.metadata.id.clone();
+    assert_ne!(uuid_a, uuid_b);
+
+    let res_b = vault.save_document(&mut conn, "notes/stable.md", &mut doc_b);
+    assert!(res_b.is_err(), "Update with mismatched ID MUST be rejected");
+
+    match res_b.unwrap_err() {
+        VaultError::IdMismatch {
+            expected, found, ..
+        } => {
+            assert_eq!(expected, uuid_a);
+            assert_eq!(found, uuid_b);
+        }
+        err => panic!("Expected IdMismatch error, got: {err:?}"),
+    }
+
+    // D. Verify database still contains UUID-A after rejected update
+    let meta = vault
+        .get_document_metadata(&conn, "notes/stable.md")
+        .unwrap();
+    assert_eq!(meta.id, uuid_a, "Database ID MUST remain UUID-A");
+    assert_eq!(meta.title, "Original Title Updated");
+
+    drop(conn);
+    let _ = fs::remove_dir_all(vault_root.parent().unwrap());
+}
+
+#[test]
+fn test_database_error_propagation_in_save_document() {
+    let (vault_root, db_path) = temp_vault_dir("db_error_prop");
+    let passcode = "VaultPasscode123!";
+
+    let mut conn = open_database(&db_path, passcode).unwrap();
+    // Do NOT run migrations -> vault_documents table does not exist
+
+    let vault = Vault::new(&vault_root).unwrap();
+    let mut doc = VaultDocument::new("Test Title", "Test Body");
+
+    let res = vault.save_document(&mut conn, "notes/test.md", &mut doc);
+    assert!(
+        res.is_err(),
+        "Database query error MUST be propagated and not swallowed"
+    );
+
+    match res.unwrap_err() {
+        VaultError::Sqlite(_) | VaultError::Database(_) => {}
+        err => panic!("Expected Sqlite or Database error, got: {err:?}"),
+    }
+
+    drop(conn);
+    let _ = fs::remove_dir_all(vault_root.parent().unwrap());
+}
+
+#[test]
+fn test_dot_path_component_rejection() {
+    let (vault_root, _) = temp_vault_dir("dot_component");
+
+    let cases = vec!["folder/./document.md", "./document.md", "sub/.", "."];
+
+    for path_str in cases {
+        let res = validate_and_resolve_relative_path(&vault_root, path_str);
+        assert!(
+            res.is_err(),
+            "Dot path component '{path_str}' MUST be rejected"
+        );
+        match res.unwrap_err() {
+            VaultError::PathTraversal(_) | VaultError::InvalidPath(_, _) => {}
+            err => panic!("Unexpected error type for dot path '{path_str}': {err:?}"),
+        }
+    }
+
+    let _ = fs::remove_dir_all(vault_root.parent().unwrap());
+}
+
+#[test]
+fn test_atomic_replacement_of_existing_target() {
+    let (vault_root, _) = temp_vault_dir("atomic_replace");
+
+    let target_file = vault_root.join("notes/target.md");
+
+    // Write initial content A
+    write_atomic(&target_file, b"Content A").unwrap();
+    assert_eq!(fs::read(&target_file).unwrap(), b"Content A");
+
+    // Overwrite atomically with content B
+    write_atomic(&target_file, b"Content B").unwrap();
+    assert_eq!(fs::read(&target_file).unwrap(), b"Content B");
+
+    // Verify no leftover temp files
+    let parent_dir = target_file.parent().unwrap();
+    let temp_files: Vec<_> = fs::read_dir(parent_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(".tmp_"))
+        .collect();
+    assert!(
+        temp_files.is_empty(),
+        "Temporary files MUST be cleaned up on success"
+    );
+
+    let _ = fs::remove_dir_all(vault_root.parent().unwrap());
+}
