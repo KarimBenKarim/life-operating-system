@@ -163,9 +163,9 @@ fn test_migrations_idempotence_and_ordering() {
 
     let mut conn = open_database(&db_path, passcode).unwrap();
 
-    // Fresh DB -> 1 migration applied
+    // Fresh DB -> 2 migrations applied (V1 and V2)
     let applied = run_migrations(&mut conn).expect("Fresh migration should succeed");
-    assert_eq!(applied, 1);
+    assert_eq!(applied, 2);
 
     // Already migrated DB -> 0 migrations applied
     let reapplied = run_migrations(&mut conn).expect("Repeated migration should succeed");
