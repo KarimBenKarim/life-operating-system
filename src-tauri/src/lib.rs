@@ -2,6 +2,7 @@ use tauri::Manager;
 use zeroize::Zeroizing;
 
 pub mod db;
+pub mod identity;
 pub mod vault;
 
 pub fn ping_logic() -> String {

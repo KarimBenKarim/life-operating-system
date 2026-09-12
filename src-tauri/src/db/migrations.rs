@@ -53,6 +53,22 @@ pub static MIGRATIONS: &[Migration] = &[
         CREATE INDEX IF NOT EXISTS idx_vault_documents_updated_at ON vault_documents(updated_at);
         ",
     },
+    Migration {
+        version: 3,
+        name: "V3__user_identity_and_profile",
+        sql: "
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            id TEXT PRIMARY KEY NOT NULL,
+            email TEXT,
+            display_name TEXT NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'UTC',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_profiles_created_at ON user_profiles(created_at);
+        ",
+    },
 ];
 
 /// Initialize the `_migrations` tracking table if missing.
