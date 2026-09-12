@@ -11,10 +11,11 @@ pub struct Migration {
 }
 
 /// Static, ordered list of all database migrations.
-pub static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "V1__init_schema",
-    sql: "
+pub static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "V1__init_schema",
+        sql: "
         CREATE TABLE IF NOT EXISTS system_audit_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
@@ -32,7 +33,27 @@ pub static MIGRATIONS: &[Migration] = &[Migration {
         CREATE INDEX IF NOT EXISTS idx_audit_action_type ON system_audit_logs(action_type);
         CREATE INDEX IF NOT EXISTS idx_audit_created_at ON system_audit_logs(created_at);
         ",
-}];
+    },
+    Migration {
+        version: 2,
+        name: "V2__vault_documents_schema",
+        sql: "
+        CREATE TABLE IF NOT EXISTS vault_documents (
+            id TEXT PRIMARY KEY NOT NULL,
+            relative_path TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vault_documents_relative_path ON vault_documents(relative_path);
+        CREATE INDEX IF NOT EXISTS idx_vault_documents_updated_at ON vault_documents(updated_at);
+        ",
+    },
+];
 
 /// Initialize the `_migrations` tracking table if missing.
 fn ensure_migrations_table(conn: &Connection) -> Result<(), DatabaseError> {

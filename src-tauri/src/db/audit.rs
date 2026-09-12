@@ -94,15 +94,11 @@ pub fn compute_audit_hash(
     hex::encode(hasher.finalize())
 }
 
-/// Insert a new cryptographic audit log entry chained to the previous record's hash.
-/// Uses an immediate transaction (`TransactionBehavior::Immediate`) to acquire an immediate
-/// database write lock, guaranteeing atomicity and sequence integrity under concurrent write attempts.
-pub fn log_audit_event(
-    conn: &mut Connection,
+/// Insert a new cryptographic audit log entry chained to the previous record's hash within an existing transaction.
+pub fn log_audit_event_tx(
+    tx: &rusqlite::Transaction,
     event: NewAuditEvent,
 ) -> Result<AuditLogEntry, DatabaseError> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-
     let mut stmt =
         tx.prepare("SELECT id, hash FROM system_audit_logs ORDER BY id DESC LIMIT 1;")?;
 
@@ -151,8 +147,6 @@ pub fn log_audit_event(
         ],
     )?;
 
-    tx.commit()?;
-
     Ok(AuditLogEntry {
         id: next_id,
         user_id: event.user_id,
@@ -166,6 +160,19 @@ pub fn log_audit_event(
         previous_hash,
         hash: current_hash,
     })
+}
+
+/// Insert a new cryptographic audit log entry chained to the previous record's hash.
+/// Uses an immediate transaction (`TransactionBehavior::Immediate`) to acquire an immediate
+/// database write lock, guaranteeing atomicity and sequence integrity under concurrent write attempts.
+pub fn log_audit_event(
+    conn: &mut Connection,
+    event: NewAuditEvent,
+) -> Result<AuditLogEntry, DatabaseError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let entry = log_audit_event_tx(&tx, event)?;
+    tx.commit()?;
+    Ok(entry)
 }
 
 /// Verify the entire audit log hash chain sequentially.
