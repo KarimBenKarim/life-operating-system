@@ -86,6 +86,24 @@ impl VaultDocument {
             VaultError::MalformedFrontmatter(file_identifier.to_string(), e.to_string())
         })?;
 
+        let parsed_uuid = Uuid::parse_str(&metadata.id).map_err(|_| {
+            VaultError::MalformedFrontmatter(
+                file_identifier.to_string(),
+                format!("Document ID '{}' is not a valid UUID", metadata.id),
+            )
+        })?;
+
+        if parsed_uuid.get_version() != Some(uuid::Version::Random) {
+            return Err(VaultError::MalformedFrontmatter(
+                file_identifier.to_string(),
+                format!(
+                    "Document ID '{}' must be a UUID v4 (found version {:?})",
+                    metadata.id,
+                    parsed_uuid.get_version()
+                ),
+            ));
+        }
+
         Ok(Self {
             metadata,
             body: body_part.to_string(),

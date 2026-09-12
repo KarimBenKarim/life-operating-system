@@ -18,7 +18,7 @@ pub use errors::VaultError;
 pub use model::{VaultDocument, VaultDocumentMetadata};
 pub use path::validate_and_resolve_relative_path;
 
-use crate::db::{log_audit_event, NewAuditEvent};
+use crate::db::{log_audit_event_tx, NewAuditEvent};
 
 /// Record schema for the SQLite vault documents metadata index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,21 +104,22 @@ impl Vault {
 
         let json_after = serde_json::to_string(&index_record)?;
 
+        // Execute metadata index mutation and audit log insertion in ONE single immediate SQLite transaction
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
         match existing {
             Some(prior_record) => {
                 let json_before = serde_json::to_string(&prior_record)?;
 
-                conn.execute(
+                tx.execute(
                     "UPDATE vault_documents SET
-                        id = ?1,
-                        title = ?2,
-                        size_bytes = ?3,
-                        content_hash = ?4,
-                        schema_version = ?5,
-                        updated_at = ?6
-                     WHERE relative_path = ?7;",
+                        title = ?1,
+                        size_bytes = ?2,
+                        content_hash = ?3,
+                        schema_version = ?4,
+                        updated_at = ?5
+                     WHERE relative_path = ?6;",
                     rusqlite::params![
-                        index_record.id,
                         index_record.title,
                         index_record.size_bytes,
                         index_record.content_hash,
@@ -128,8 +129,8 @@ impl Vault {
                     ],
                 )?;
 
-                log_audit_event(
-                    conn,
+                log_audit_event_tx(
+                    &tx,
                     NewAuditEvent {
                         user_id: Some("system".to_string()),
                         action_type: "VAULT_DOCUMENT_UPDATE".to_string(),
@@ -142,7 +143,7 @@ impl Vault {
                 )?;
             }
             None => {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO vault_documents (
                         id, relative_path, title, size_bytes, content_hash, schema_version, created_at, updated_at
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
@@ -158,8 +159,8 @@ impl Vault {
                     ],
                 )?;
 
-                log_audit_event(
-                    conn,
+                log_audit_event_tx(
+                    &tx,
                     NewAuditEvent {
                         user_id: Some("system".to_string()),
                         action_type: "VAULT_DOCUMENT_CREATE".to_string(),
@@ -172,6 +173,8 @@ impl Vault {
                 )?;
             }
         }
+
+        tx.commit()?;
 
         Ok(index_record)
     }
@@ -203,13 +206,15 @@ impl Vault {
             fs::remove_file(&full_path)?;
         }
 
-        conn.execute(
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        tx.execute(
             "DELETE FROM vault_documents WHERE relative_path = ?1;",
             rusqlite::params![relative_path],
         )?;
 
-        log_audit_event(
-            conn,
+        log_audit_event_tx(
+            &tx,
             NewAuditEvent {
                 user_id: Some("system".to_string()),
                 action_type: "VAULT_DOCUMENT_DELETE".to_string(),
@@ -220,6 +225,8 @@ impl Vault {
                 client_info: Some("desktop_app".to_string()),
             },
         )?;
+
+        tx.commit()?;
 
         Ok(())
     }

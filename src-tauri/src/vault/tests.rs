@@ -33,6 +33,123 @@ fn test_valid_paths() {
 }
 
 #[test]
+fn test_uuid_v4_parsing_and_rejection() {
+    // 1. Valid UUID v4 is accepted
+    let valid_v4 = "---\nid: f47ac10b-58cc-4372-a567-0e02b2c3d479\ntitle: Valid V4\nschema_version: 1\ncreated_at: '2026-09-09T00:00:00Z'\nupdated_at: '2026-09-09T00:00:00Z'\n---\nBody";
+    let doc_v4 = VaultDocument::parse(valid_v4, "valid_v4.md").unwrap();
+    assert_eq!(doc_v4.metadata.id, "f47ac10b-58cc-4372-a567-0e02b2c3d479");
+
+    // 2. Non-UUID string is rejected
+    let invalid_id = "---\nid: not-a-valid-uuid\ntitle: Invalid ID\nschema_version: 1\ncreated_at: '2026-09-09T00:00:00Z'\nupdated_at: '2026-09-09T00:00:00Z'\n---\nBody";
+    let res_invalid = VaultDocument::parse(invalid_id, "invalid_id.md");
+    assert!(res_invalid.is_err());
+    match res_invalid.unwrap_err() {
+        VaultError::MalformedFrontmatter(_, msg) => {
+            assert!(msg.contains("not a valid UUID"));
+        }
+        err => panic!("Expected MalformedFrontmatter error, got: {err:?}"),
+    }
+
+    // 3. Non-v4 UUID (UUID v1) is rejected
+    let uuid_v1 = "---\nid: 6ba7b810-9dad-11d1-80b4-00c04fd430c8\ntitle: UUID V1\nschema_version: 1\ncreated_at: '2026-09-09T00:00:00Z'\nupdated_at: '2026-09-09T00:00:00Z'\n---\nBody";
+    let res_v1 = VaultDocument::parse(uuid_v1, "uuid_v1.md");
+    assert!(res_v1.is_err());
+    match res_v1.unwrap_err() {
+        VaultError::MalformedFrontmatter(_, msg) => {
+            assert!(msg.contains("must be a UUID v4"));
+        }
+        err => panic!("Expected MalformedFrontmatter error for v1 UUID, got: {err:?}"),
+    }
+}
+
+#[test]
+fn test_atomic_sqlite_metadata_and_audit_transaction_rollback() {
+    let (vault_root, db_path) = temp_vault_dir("atomic_tx_rollback");
+    let passcode = "VaultPasscode123!";
+
+    let mut conn = open_database(&db_path, passcode).unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let vault = Vault::new(&vault_root).unwrap();
+
+    // Drop system_audit_logs to force audit event insertion failure
+    conn.execute_batch("DROP TABLE system_audit_logs;").unwrap();
+
+    let mut doc = VaultDocument::new("Rollback Test", "Rollback Body");
+
+    // save_document should fail during audit event insertion and roll back metadata mutation
+    let res = vault.save_document(&mut conn, "notes/rollback.md", &mut doc);
+    assert!(
+        res.is_err(),
+        "Operation MUST fail when audit event insertion fails"
+    );
+
+    // Verify vault_documents table was NOT left with committed metadata
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT count(*) FROM vault_documents WHERE relative_path = 'notes/rollback.md';",
+            )
+            .unwrap();
+        let count: i64 = stmt.query_row([], |r| r.get(0)).unwrap();
+        assert_eq!(
+            count, 0,
+            "Metadata MUST NOT remain committed after audit failure"
+        );
+    }
+
+    drop(conn);
+    let _ = fs::remove_dir_all(vault_root.parent().unwrap());
+}
+
+#[test]
+fn test_update_statement_leaves_primary_key_immutable() {
+    let (vault_root, db_path) = temp_vault_dir("pk_immutable");
+    let passcode = "VaultPasscode123!";
+
+    let mut conn = open_database(&db_path, passcode).unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let vault = Vault::new(&vault_root).unwrap();
+
+    let mut doc = VaultDocument::new("Initial Title", "Initial Body");
+    let initial_id = doc.metadata.id.clone();
+
+    let record1 = vault
+        .save_document(&mut conn, "notes/immutable_pk.md", &mut doc)
+        .unwrap();
+    assert_eq!(record1.id, initial_id);
+
+    // Update document
+    doc.metadata.title = "Updated Title".to_string();
+    doc.body = "Updated Body".to_string();
+
+    let record2 = vault
+        .save_document(&mut conn, "notes/immutable_pk.md", &mut doc)
+        .unwrap();
+    assert_eq!(
+        record2.id, initial_id,
+        "Primary key ID MUST remain unchanged"
+    );
+    assert_eq!(record2.title, "Updated Title");
+
+    // Query raw SQLite row
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, title FROM vault_documents WHERE relative_path = 'notes/immutable_pk.md';")
+            .unwrap();
+        let (db_id, db_title): (String, String) =
+            stmt.query_row([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+
+        assert_eq!(db_id, initial_id);
+        assert_eq!(db_title, "Updated Title");
+    }
+
+    drop(conn);
+    let _ = fs::remove_dir_all(vault_root.parent().unwrap());
+}
+
+#[test]
 fn test_traversal_rejection() {
     let (vault_root, _) = temp_vault_dir("traversal");
 

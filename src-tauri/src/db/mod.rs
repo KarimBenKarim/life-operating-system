@@ -7,7 +7,9 @@ pub mod migrations;
 #[cfg(test)]
 pub mod tests;
 
-pub use audit::{log_audit_event, verify_audit_chain, AuditLogEntry, NewAuditEvent};
+pub use audit::{
+    log_audit_event, log_audit_event_tx, verify_audit_chain, AuditLogEntry, NewAuditEvent,
+};
 pub use connection::{
     get_kdf_metadata_path, initialize_and_verify_database, open_database, KdfMetadata,
 };
